@@ -2,6 +2,13 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Employee, LeaveRequest, LeaveStatus, LeaveType, Role } from '@/types';
+import {
+  ApproveResult,
+  AnnualLeaveSummary,
+  computeAnnualSummary,
+  validateSubmit,
+  validateApprove,
+} from '@/utils/leaveRules';
 
 const INITIAL_EMPLOYEES: Employee[] = [
   { id: 'emp-1', name: '张三', annualLeaveTotal: 15 },
@@ -10,10 +17,17 @@ const INITIAL_EMPLOYEES: Employee[] = [
   { id: 'emp-4', name: '赵六', annualLeaveTotal: 12 },
 ];
 
-type ApproveResult = {
-  success: boolean;
-  reason?: string;
-};
+export interface PendingRequestItem {
+  request: LeaveRequest;
+  approvalStatus: ApproveResult;
+}
+
+export interface DashboardStats {
+  totalEmployees: number;
+  totalRequests: number;
+  pendingCount: number;
+  approvedCount: number;
+}
 
 interface LeaveState {
   employees: Employee[];
@@ -30,22 +44,27 @@ interface LeaveState {
     type: LeaveType;
     days: number;
     reason: string;
-  }) => void;
+  }) => ApproveResult;
 
-  updateRequestStatus: (requestId: string, status: LeaveStatus) => ApproveResult;
+  updateRequestStatus: (
+    requestId: string,
+    status: LeaveStatus
+  ) => ApproveResult;
 
+  getAnnualLeaveSummary: (employeeId: string) => AnnualLeaveSummary;
   getRequestsByEmployee: (employeeId: string) => LeaveRequest[];
   getPendingRequests: () => LeaveRequest[];
+  getPendingRequestsWithApproval: () => PendingRequestItem[];
   getAllRequests: () => LeaveRequest[];
-
-  getUsedAnnualDays: (employeeId: string) => number;
-  getPendingAnnualDays: (employeeId: string, excludeRequestId?: string) => number;
-  getRemainingAnnualDays: (employeeId: string) => number;
-  getAvailableAnnualDays: (employeeId: string) => number;
-  canApproveAnnualRequest: (requestId: string) => ApproveResult;
-
+  getDashboardStats: () => DashboardStats;
   getCurrentEmployee: () => Employee | undefined;
 }
+
+const sortByCreatedDesc = (a: LeaveRequest, b: LeaveRequest) =>
+  new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+
+const sortByCreatedAsc = (a: LeaveRequest, b: LeaveRequest) =>
+  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
 
 export const useLeaveStore = create<LeaveState>()(
   persist(
@@ -59,9 +78,15 @@ export const useLeaveStore = create<LeaveState>()(
       setCurrentEmployeeId: (id) => set({ currentEmployeeId: id }),
 
       submitRequest: (data) => {
-        const { currentEmployeeId, employees } = get();
+        const { currentEmployeeId, employees, requests } = get();
         const employee = employees.find((e) => e.id === currentEmployeeId);
-        if (!employee) return;
+        if (!employee) {
+          return { success: false, reason: '员工不存在' };
+        }
+
+        const summary = computeAnnualSummary(employee, requests);
+        const validation = validateSubmit(data.type, data.days, summary);
+        if (!validation.success) return validation;
 
         const newRequest: LeaveRequest = {
           id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -79,6 +104,8 @@ export const useLeaveStore = create<LeaveState>()(
         set((state) => ({
           requests: [newRequest, ...state.requests],
         }));
+
+        return { success: true };
       },
 
       updateRequestStatus: (requestId, status) => {
@@ -87,11 +114,16 @@ export const useLeaveStore = create<LeaveState>()(
           return { success: false, reason: '申请不存在' };
         }
 
-        if (status === 'approved' && request.type === 'annual') {
-          const check = get().canApproveAnnualRequest(requestId);
-          if (!check.success) {
-            return check;
-          }
+        if (status === 'approved') {
+          const employee = get().employees.find(
+            (e) => e.id === request.employeeId
+          );
+          const validation = validateApprove(
+            request,
+            employee,
+            get().requests
+          );
+          if (!validation.success) return validation;
         }
 
         set((state) => ({
@@ -103,97 +135,53 @@ export const useLeaveStore = create<LeaveState>()(
         return { success: true };
       },
 
+      getAnnualLeaveSummary: (employeeId) => {
+        const { employees, requests } = get();
+        const employee = employees.find((e) => e.id === employeeId);
+        return computeAnnualSummary(employee, requests);
+      },
+
       getRequestsByEmployee: (employeeId) => {
         return get()
           .requests.filter((r) => r.employeeId === employeeId)
-          .sort(
-            (a, b) =>
-              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
+          .sort(sortByCreatedDesc);
       },
 
       getPendingRequests: () => {
         return get()
           .requests.filter((r) => r.status === 'pending')
-          .sort(
-            (a, b) =>
-              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-          );
+          .sort(sortByCreatedAsc);
+      },
+
+      getPendingRequestsWithApproval: () => {
+        const { employees, requests } = get();
+        return requests
+          .filter((r) => r.status === 'pending')
+          .sort(sortByCreatedAsc)
+          .map((request) => {
+            const employee = employees.find(
+              (e) => e.id === request.employeeId
+            );
+            return {
+              request,
+              approvalStatus: validateApprove(request, employee, requests),
+            };
+          });
       },
 
       getAllRequests: () => {
-        return get()
-          .requests.slice()
-          .sort(
-            (a, b) =>
-              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
+        return get().requests.slice().sort(sortByCreatedDesc);
       },
 
-      getUsedAnnualDays: (employeeId) => {
-        return get()
-          .requests.filter(
-            (r) =>
-              r.employeeId === employeeId &&
-              r.type === 'annual' &&
-              r.status === 'approved'
-          )
-          .reduce((sum, r) => sum + r.days, 0);
-      },
-
-      getPendingAnnualDays: (employeeId, excludeRequestId) => {
-        return get()
-          .requests.filter(
-            (r) =>
-              r.employeeId === employeeId &&
-              r.type === 'annual' &&
-              r.status === 'pending' &&
-              r.id !== excludeRequestId
-          )
-          .reduce((sum, r) => sum + r.days, 0);
-      },
-
-      getRemainingAnnualDays: (employeeId) => {
-        const employee = get().employees.find((e) => e.id === employeeId);
-        if (!employee) return 0;
-        const used = get().getUsedAnnualDays(employeeId);
-        return Math.max(0, employee.annualLeaveTotal - used);
-      },
-
-      getAvailableAnnualDays: (employeeId) => {
-        const employee = get().employees.find((e) => e.id === employeeId);
-        if (!employee) return 0;
-        const used = get().getUsedAnnualDays(employeeId);
-        const pending = get().getPendingAnnualDays(employeeId);
-        return Math.max(0, employee.annualLeaveTotal - used - pending);
-      },
-
-      canApproveAnnualRequest: (requestId) => {
-        const request = get().requests.find((r) => r.id === requestId);
-        if (!request) {
-          return { success: false, reason: '申请不存在' };
-        }
-        if (request.type !== 'annual') {
-          return { success: true };
-        }
-
-        const employee = get().employees.find((e) => e.id === request.employeeId);
-        if (!employee) {
-          return { success: false, reason: '员工不存在' };
-        }
-
-        const used = get().getUsedAnnualDays(request.employeeId);
-        const otherPending = get().getPendingAnnualDays(request.employeeId, requestId);
-        const available = employee.annualLeaveTotal - used - otherPending;
-
-        if (request.days > available) {
-          return {
-            success: false,
-            reason: `年假额度不足。该员工年假总额 ${employee.annualLeaveTotal} 天，已休 ${used} 天，其他待审批占用 ${otherPending} 天，当前可批额度仅 ${available} 天，而本申请需要 ${request.days} 天。`,
-          };
-        }
-
-        return { success: true };
+      getDashboardStats: () => {
+        const { employees, requests } = get();
+        return {
+          totalEmployees: employees.length,
+          totalRequests: requests.length,
+          pendingCount: requests.filter((r) => r.status === 'pending').length,
+          approvedCount: requests.filter((r) => r.status === 'approved')
+            .length,
+        };
       },
 
       getCurrentEmployee: () => {

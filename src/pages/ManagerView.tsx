@@ -14,24 +14,15 @@ import {
   Eye,
   AlertCircle,
 } from 'lucide-react';
-import { useLeaveStore } from '@/store/leaveStore';
+import { useLeaveStore, PendingRequestItem } from '@/store/leaveStore';
+import { LEAVE_STATUS_LABELS, LEAVE_TYPE_LABELS } from '@/types';
+import { ApproveResult } from '@/utils/leaveRules';
 import {
-  LEAVE_STATUS_LABELS,
-  LEAVE_TYPE_LABELS,
-  LeaveRequest,
-} from '@/types';
-
-const statusStyles: Record<string, string> = {
-  pending: 'bg-amber-50 text-amber-700 border-amber-200',
-  approved: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  rejected: 'bg-rose-50 text-rose-700 border-rose-200',
-};
-
-const typeStyles: Record<string, string> = {
-  annual: 'bg-blue-50 text-blue-700 border-blue-200',
-  personal: 'bg-purple-50 text-purple-700 border-purple-200',
-  sick: 'bg-teal-50 text-teal-700 border-teal-200',
-};
+  formatDateShort,
+  STATUS_STYLES,
+  TYPE_STYLES,
+  getProgressColor,
+} from '@/utils/formatters';
 
 type TabType = 'pending' | 'stats';
 
@@ -44,18 +35,16 @@ interface ToastMessage {
 export function ManagerView() {
   const {
     employees,
-    getPendingRequests,
-    getAllRequests,
+    getPendingRequestsWithApproval,
     updateRequestStatus,
-    getUsedAnnualDays,
-    getRemainingAnnualDays,
-    canApproveAnnualRequest,
+    getAnnualLeaveSummary,
+    getDashboardStats,
   } = useLeaveStore();
 
   const [activeTab, setActiveTab] = useState<TabType>('pending');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const pendingRequests = getPendingRequests();
-  const allRequests = getAllRequests();
+  const pendingItems = getPendingRequestsWithApproval();
+  const stats = getDashboardStats();
 
   const showToast = (type: ToastMessage['type'], text: string) => {
     const id = Date.now();
@@ -79,22 +68,6 @@ export function ManagerView() {
     showToast('warning', '申请已拒绝');
   };
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-  };
-
-  const stats = {
-    totalEmployees: employees.length,
-    totalRequests: allRequests.length,
-    pendingCount: pendingRequests.length,
-    approvedCount: allRequests.filter((r) => r.status === 'approved').length,
-  };
-
   const toastColorMap = {
     error: 'bg-rose-500',
     success: 'bg-emerald-500',
@@ -116,6 +89,7 @@ export function ManagerView() {
           </div>
         ))}
       </div>
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl p-5 text-white shadow-lg shadow-blue-500/20">
           <div className="flex items-center justify-between mb-3">
@@ -160,9 +134,9 @@ export function ManagerView() {
             >
               <AlertTriangle className="w-4 h-4" />
               待审批申请
-              {pendingRequests.length > 0 && (
+              {stats.pendingCount > 0 && (
                 <span className="ml-1 px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded-full">
-                  {pendingRequests.length}
+                  {stats.pendingCount}
                 </span>
               )}
             </button>
@@ -183,7 +157,7 @@ export function ManagerView() {
         <div className="p-7">
           {activeTab === 'pending' && (
             <>
-              {pendingRequests.length === 0 ? (
+              {pendingItems.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 text-gray-400">
                   <CheckCircle2 className="w-20 h-20 mb-5 text-emerald-200" />
                   <p className="text-xl font-semibold text-gray-500">
@@ -219,18 +193,12 @@ export function ManagerView() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
-                      {pendingRequests.map((request) => (
+                      {pendingItems.map((item) => (
                         <PendingRow
-                          key={request.id}
-                          request={request}
-                          formatDate={formatDate}
+                          key={item.request.id}
+                          item={item}
                           onApprove={handleApprove}
                           onReject={handleReject}
-                          canApproveResult={
-                            request.type === 'annual'
-                              ? canApproveAnnualRequest(request.id)
-                              : { success: true }
-                          }
                         />
                       ))}
                     </tbody>
@@ -265,22 +233,11 @@ export function ManagerView() {
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {employees.map((emp) => {
-                      const used = getUsedAnnualDays(emp.id);
-                      const remaining = getRemainingAnnualDays(emp.id);
+                      const s = getAnnualLeaveSummary(emp.id);
                       const percent =
-                        emp.annualLeaveTotal > 0
-                          ? Math.min(
-                              100,
-                              (used / emp.annualLeaveTotal) * 100
-                            )
+                        s.total > 0
+                          ? Math.min(100, s.usedPercent)
                           : 0;
-
-                      const progressColor =
-                        percent >= 90
-                          ? 'from-rose-500 to-red-500'
-                          : percent >= 70
-                          ? 'from-amber-500 to-orange-500'
-                          : 'from-emerald-500 to-teal-500';
 
                       return (
                         <tr
@@ -299,23 +256,23 @@ export function ManagerView() {
                           </td>
                           <td className="py-5 px-4">
                             <span className="text-gray-700 font-medium">
-                              {emp.annualLeaveTotal} 天
+                              {s.total} 天
                             </span>
                           </td>
                           <td className="py-5 px-4">
                             <span className="text-blue-700 font-semibold">
-                              {used} 天
+                              {s.used} 天
                             </span>
                           </td>
                           <td className="py-5 px-4">
                             <span
                               className={`font-bold ${
-                                remaining <= 3
+                                s.remaining <= 3
                                   ? 'text-rose-600'
                                   : 'text-emerald-600'
                               }`}
                             >
-                              {remaining} 天
+                              {s.remaining} 天
                             </span>
                           </td>
                           <td className="py-5 px-4">
@@ -327,7 +284,7 @@ export function ManagerView() {
                               </div>
                               <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
                                 <div
-                                  className={`h-full bg-gradient-to-r ${progressColor} rounded-full transition-all duration-500`}
+                                  className={`h-full bg-gradient-to-r ${getProgressColor(percent)} rounded-full transition-all duration-500`}
                                   style={{ width: `${percent}%` }}
                                 />
                               </div>
@@ -347,28 +304,16 @@ export function ManagerView() {
   );
 }
 
-type ApproveResult = {
-  success: boolean;
-  reason?: string;
-};
-
 interface PendingRowProps {
-  request: LeaveRequest;
-  formatDate: (date: string) => string;
+  item: PendingRequestItem;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
-  canApproveResult: ApproveResult;
 }
 
-function PendingRow({
-  request,
-  formatDate,
-  onApprove,
-  onReject,
-  canApproveResult,
-}: PendingRowProps) {
+function PendingRow({ item, onApprove, onReject }: PendingRowProps) {
+  const { request, approvalStatus } = item;
   const [expanded, setExpanded] = useState(false);
-  const isBlocked = !canApproveResult.success;
+  const isBlocked = !approvalStatus.success;
 
   return (
     <>
@@ -393,11 +338,11 @@ function PendingRow({
           <div className="flex items-center gap-2 text-gray-700">
             <Calendar className="w-4 h-4 text-gray-400" />
             <span className="text-sm">
-              {formatDate(request.startDate)}
+              {formatDateShort(request.startDate)}
               {request.startDate !== request.endDate && (
                 <>
                   <span className="mx-1 text-gray-400">~</span>
-                  {formatDate(request.endDate)}
+                  {formatDateShort(request.endDate)}
                 </>
               )}
             </span>
@@ -405,19 +350,23 @@ function PendingRow({
         </td>
         <td className="py-4 px-4">
           <span
-            className={`inline-flex px-2.5 py-1 rounded-lg text-xs font-medium border ${typeStyles[request.type]}`}
+            className={`inline-flex px-2.5 py-1 rounded-lg text-xs font-medium border ${TYPE_STYLES[request.type]}`}
           >
             {LEAVE_TYPE_LABELS[request.type]}
           </span>
         </td>
         <td className="py-4 px-4">
-          <span className="font-bold text-blue-700 text-lg">{request.days}</span>
+          <span className="font-bold text-blue-700 text-lg">
+            {request.days}
+          </span>
           <span className="text-gray-500 text-sm ml-1">天</span>
         </td>
         <td className="py-4 px-4 max-w-xs">
           <div className="flex items-start gap-2">
             <FileText className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-gray-600 line-clamp-2">{request.reason}</p>
+            <p className="text-sm text-gray-600 line-clamp-2">
+              {request.reason}
+            </p>
           </div>
         </td>
         <td className="py-4 px-4">
@@ -425,10 +374,10 @@ function PendingRow({
             {isBlocked && (
               <div
                 className="flex items-start gap-1.5 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 max-w-[260px]"
-                title={canApproveResult.reason}
+                title={approvalStatus.reason}
               >
                 <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-rose-500" />
-                <span className="leading-snug">{canApproveResult.reason}</span>
+                <span className="leading-snug">{approvalStatus.reason}</span>
               </div>
             )}
             <div className="flex items-center justify-end gap-2">
@@ -454,7 +403,7 @@ function PendingRow({
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed border border-gray-200'
                     : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 hover:shadow-emerald-600/40'
                 }`}
-                title={isBlocked ? canApproveResult.reason : '通过申请'}
+                title={isBlocked ? approvalStatus.reason : '通过申请'}
               >
                 <CheckCircle2 className="w-4 h-4" />
                 通过
@@ -481,7 +430,7 @@ function PendingRow({
               <DetailItem
                 icon={<Calendar className="w-4 h-4 text-blue-500" />}
                 label="提交时间"
-                value={formatDate(request.createdAt)}
+                value={formatDateShort(request.createdAt)}
               />
               <DetailItem
                 icon={<Clock className="w-4 h-4 text-blue-500" />}
@@ -492,7 +441,7 @@ function PendingRow({
                 icon={<FileText className="w-4 h-4 text-blue-500" />}
                 label="当前状态"
                 value={LEAVE_STATUS_LABELS[request.status]}
-                valueClass={`inline-flex px-2.5 py-1 rounded-lg text-xs font-semibold border ${statusStyles[request.status]}`}
+                valueClass={`inline-flex px-2.5 py-1 rounded-lg text-xs font-semibold border ${STATUS_STYLES[request.status]}`}
               />
             </div>
             <div className="mt-5 p-4 bg-white rounded-xl border border-blue-100">

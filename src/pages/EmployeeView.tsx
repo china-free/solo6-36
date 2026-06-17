@@ -13,36 +13,21 @@ import {
 } from 'lucide-react';
 import { useLeaveStore } from '@/store/leaveStore';
 import { LeaveType, LEAVE_TYPE_LABELS } from '@/types';
+import { calculateDaysBetween } from '@/utils/leaveRules';
 import { LeaveRequestCard } from '@/components/LeaveRequestCard';
-
-function calculateDays(startDate: string, endDate: string): number {
-  if (!startDate || !endDate) return 0;
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  if (end < start) return 0;
-  const diffTime = Math.abs(end.getTime() - start.getTime());
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-  return diffDays;
-}
 
 export function EmployeeView() {
   const {
     currentEmployeeId,
     getCurrentEmployee,
     getRequestsByEmployee,
-    getUsedAnnualDays,
-    getPendingAnnualDays,
-    getRemainingAnnualDays,
-    getAvailableAnnualDays,
+    getAnnualLeaveSummary,
     submitRequest,
   } = useLeaveStore();
 
   const employee = getCurrentEmployee();
   const myRequests = getRequestsByEmployee(currentEmployeeId);
-  const usedAnnual = getUsedAnnualDays(currentEmployeeId);
-  const pendingAnnual = getPendingAnnualDays(currentEmployeeId);
-  const remainingAnnual = getRemainingAnnualDays(currentEmployeeId);
-  const availableAnnual = getAvailableAnnualDays(currentEmployeeId);
+  const summary = getAnnualLeaveSummary(currentEmployeeId);
 
   const today = new Date().toISOString().split('T')[0];
   const [startDate, setStartDate] = useState('');
@@ -56,14 +41,14 @@ export function EmployeeView() {
   const handleStartDateChange = (value: string) => {
     setStartDate(value);
     if (value && endDate) {
-      setDays(calculateDays(value, endDate));
+      setDays(calculateDaysBetween(value, endDate));
     }
   };
 
   const handleEndDateChange = (value: string) => {
     setEndDate(value);
     if (startDate && value) {
-      setDays(calculateDays(startDate, value));
+      setDays(calculateDaysBetween(startDate, value));
     }
   };
 
@@ -89,25 +74,18 @@ export function EmployeeView() {
       return;
     }
 
-    if (leaveType === 'annual') {
-      if (days > availableAnnual) {
-        const pendingHint = pendingAnnual > 0
-          ? `（已休 ${usedAnnual} 天、待审批占用 ${pendingAnnual} 天）`
-          : `（已休 ${usedAnnual} 天）`;
-        setError(
-          `可提交年假不足${pendingHint}，当前可提交额度仅 ${availableAnnual} 天，本申请需要 ${days} 天。`
-        );
-        return;
-      }
-    }
-
-    submitRequest({
+    const result = submitRequest({
       startDate,
       endDate,
       type: leaveType,
       days,
       reason: reason.trim(),
     });
+
+    if (!result.success) {
+      setError(result.reason || '提交失败');
+      return;
+    }
 
     setStartDate('');
     setEndDate('');
@@ -118,18 +96,6 @@ export function EmployeeView() {
 
     setTimeout(() => setShowSuccess(false), 3000);
   };
-
-  const usedPercent =
-    employee && employee.annualLeaveTotal > 0
-      ? Math.min(100, (usedAnnual / employee.annualLeaveTotal) * 100)
-      : 0;
-  const pendingPercent =
-    employee && employee.annualLeaveTotal > 0
-      ? Math.min(
-          100 - usedPercent,
-          (pendingAnnual / employee.annualLeaveTotal) * 100
-        )
-      : 0;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -151,14 +117,14 @@ export function EmployeeView() {
                       可提交
                     </p>
                     <p className="text-2xl font-bold tracking-tight text-emerald-200">
-                      {availableAnnual}
+                      {summary.available}
                       <span className="text-xs font-normal ml-0.5">天</span>
                     </p>
                   </div>
                   <div>
                     <p className="text-blue-200 text-xs mb-1">账面剩余</p>
                     <p className="text-2xl font-bold tracking-tight">
-                      {remainingAnnual}
+                      {summary.remaining}
                       <span className="text-xs font-normal text-blue-200 ml-0.5">
                         天
                       </span>
@@ -167,7 +133,7 @@ export function EmployeeView() {
                   <div className="text-right">
                     <p className="text-blue-200 text-xs mb-1">总额度</p>
                     <p className="text-2xl font-semibold">
-                      {employee.annualLeaveTotal}
+                      {summary.total}
                       <span className="text-xs font-normal text-blue-200 ml-0.5">
                         天
                       </span>
@@ -181,7 +147,7 @@ export function EmployeeView() {
                   <div className="flex items-center gap-2">
                     <span className="w-3 h-3 rounded-full bg-emerald-300" />
                     <span className="text-blue-100">已休</span>
-                    <span className="ml-auto font-bold">{usedAnnual}天</span>
+                    <span className="ml-auto font-bold">{summary.used}天</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="w-3 h-3 rounded-full bg-amber-300" />
@@ -189,7 +155,9 @@ export function EmployeeView() {
                       <Clock className="w-3 h-3" />
                       待审批
                     </span>
-                    <span className="ml-auto font-bold">{pendingAnnual}天</span>
+                    <span className="ml-auto font-bold">
+                      {summary.pending}天
+                    </span>
                   </div>
                 </div>
 
@@ -197,20 +165,21 @@ export function EmployeeView() {
                   <div className="flex justify-between text-xs text-blue-200">
                     <span>额度使用进度</span>
                     <span>
-                      已批 {usedAnnual} + 待批 {pendingAnnual} / {employee.annualLeaveTotal}
+                      已批 {summary.used} + 待批 {summary.pending} /{' '}
+                      {summary.total}
                     </span>
                   </div>
                   <div className="h-3 bg-white/20 rounded-full overflow-hidden flex">
                     <div
                       className="h-full bg-gradient-to-r from-emerald-300 to-teal-400 transition-all duration-500"
-                      style={{ width: `${usedPercent}%` }}
+                      style={{ width: `${summary.usedPercent}%` }}
                     />
                     <div
                       className="h-full bg-gradient-to-r from-amber-300 to-orange-400 transition-all duration-500"
-                      style={{ width: `${pendingPercent}%` }}
+                      style={{ width: `${summary.pendingPercent}%` }}
                     />
                   </div>
-                  {pendingAnnual > 0 && (
+                  {summary.pending > 0 && (
                     <p className="text-xs text-amber-200/90 flex items-start gap-1 pt-1">
                       <Clock className="w-3 h-3 mt-0.5 flex-shrink-0" />
                       提示：待审批中的年假申请已预占额度，拒绝后将自动释放。
@@ -284,7 +253,9 @@ export function EmployeeView() {
                       type="number"
                       min="1"
                       value={days}
-                      onChange={(e) => setDays(Math.max(1, parseInt(e.target.value) || 1))}
+                      onChange={(e) =>
+                        setDays(Math.max(1, parseInt(e.target.value) || 1))
+                      }
                       className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
                     />
                     <span className="text-gray-500 font-medium">天</span>
@@ -345,8 +316,12 @@ export function EmployeeView() {
                 {myRequests.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 text-gray-400">
                     <FileText className="w-16 h-16 mb-4 text-gray-200" />
-                    <p className="text-lg font-medium text-gray-500">暂无请假申请</p>
-                    <p className="text-sm text-gray-400 mt-1">提交您的第一份请假申请吧</p>
+                    <p className="text-lg font-medium text-gray-500">
+                      暂无请假申请
+                    </p>
+                    <p className="text-sm text-gray-400 mt-1">
+                      提交您的第一份请假申请吧
+                    </p>
                   </div>
                 ) : (
                   <div className="space-y-4 max-h-[700px] overflow-y-auto pr-2">
