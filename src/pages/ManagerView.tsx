@@ -12,6 +12,7 @@ import {
   TrendingUp,
   AlertTriangle,
   Eye,
+  AlertCircle,
 } from 'lucide-react';
 import { useLeaveStore } from '@/store/leaveStore';
 import {
@@ -34,6 +35,12 @@ const typeStyles: Record<string, string> = {
 
 type TabType = 'pending' | 'stats';
 
+interface ToastMessage {
+  id: number;
+  type: 'error' | 'success' | 'warning';
+  text: string;
+}
+
 export function ManagerView() {
   const {
     employees,
@@ -42,18 +49,34 @@ export function ManagerView() {
     updateRequestStatus,
     getUsedAnnualDays,
     getRemainingAnnualDays,
+    canApproveAnnualRequest,
   } = useLeaveStore();
 
   const [activeTab, setActiveTab] = useState<TabType>('pending');
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const pendingRequests = getPendingRequests();
   const allRequests = getAllRequests();
 
+  const showToast = (type: ToastMessage['type'], text: string) => {
+    const id = Date.now();
+    setToasts((prev) => [...prev, { id, type, text }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  };
+
   const handleApprove = (id: string) => {
-    updateRequestStatus(id, 'approved');
+    const result = updateRequestStatus(id, 'approved');
+    if (result.success) {
+      showToast('success', '申请已通过');
+    } else {
+      showToast('error', result.reason || '审批失败');
+    }
   };
 
   const handleReject = (id: string) => {
     updateRequestStatus(id, 'rejected');
+    showToast('warning', '申请已拒绝');
   };
 
   const formatDate = (dateStr: string) => {
@@ -72,8 +95,27 @@ export function ManagerView() {
     approvedCount: allRequests.filter((r) => r.status === 'approved').length,
   };
 
+  const toastColorMap = {
+    error: 'bg-rose-500',
+    success: 'bg-emerald-500',
+    warning: 'bg-amber-500',
+  };
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 relative">
+      <div className="fixed top-24 right-8 z-50 space-y-3 w-[420px] max-w-[92vw]">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`${toastColorMap[toast.type]} text-white px-5 py-4 rounded-2xl shadow-2xl shadow-black/15 flex items-start gap-3 animate-fadeIn`}
+          >
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            <p className="text-sm font-medium leading-relaxed flex-1 whitespace-pre-line">
+              {toast.text}
+            </p>
+          </div>
+        ))}
+      </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl p-5 text-white shadow-lg shadow-blue-500/20">
           <div className="flex items-center justify-between mb-3">
@@ -184,6 +226,11 @@ export function ManagerView() {
                           formatDate={formatDate}
                           onApprove={handleApprove}
                           onReject={handleReject}
+                          canApproveResult={
+                            request.type === 'annual'
+                              ? canApproveAnnualRequest(request.id)
+                              : { success: true }
+                          }
                         />
                       ))}
                     </tbody>
@@ -300,19 +347,38 @@ export function ManagerView() {
   );
 }
 
+type ApproveResult = {
+  success: boolean;
+  reason?: string;
+};
+
 interface PendingRowProps {
   request: LeaveRequest;
   formatDate: (date: string) => string;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  canApproveResult: ApproveResult;
 }
 
-function PendingRow({ request, formatDate, onApprove, onReject }: PendingRowProps) {
+function PendingRow({
+  request,
+  formatDate,
+  onApprove,
+  onReject,
+  canApproveResult,
+}: PendingRowProps) {
   const [expanded, setExpanded] = useState(false);
+  const isBlocked = !canApproveResult.success;
 
   return (
     <>
-      <tr className="hover:bg-blue-50/30 transition-colors">
+      <tr
+        className={`transition-colors ${
+          isBlocked
+            ? 'bg-rose-50/40 hover:bg-rose-50/60'
+            : 'hover:bg-blue-50/30'
+        }`}
+      >
         <td className="py-4 px-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white font-semibold text-sm shadow">
@@ -355,33 +421,56 @@ function PendingRow({ request, formatDate, onApprove, onReject }: PendingRowProp
           </div>
         </td>
         <td className="py-4 px-4">
-          <div className="flex items-center justify-end gap-2">
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-              title="查看详情"
-            >
-              <Eye className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onReject(request.id)}
-              className="flex items-center gap-1.5 px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium rounded-xl transition-all border border-rose-200 hover:border-rose-300"
-            >
-              <XCircle className="w-4 h-4" />
-              拒绝
-            </button>
-            <button
-              onClick={() => onApprove(request.id)}
-              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-xl transition-all shadow-md shadow-emerald-600/20 hover:shadow-emerald-600/40"
-            >
-              <CheckCircle2 className="w-4 h-4" />
-              通过
-            </button>
+          <div className="flex flex-col items-end gap-2">
+            {isBlocked && (
+              <div
+                className="flex items-start gap-1.5 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 max-w-[260px]"
+                title={canApproveResult.reason}
+              >
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-rose-500" />
+                <span className="leading-snug">{canApproveResult.reason}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setExpanded(!expanded)}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                title="查看详情"
+              >
+                <Eye className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => onReject(request.id)}
+                className="flex items-center gap-1.5 px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium rounded-xl transition-all border border-rose-200 hover:border-rose-300"
+              >
+                <XCircle className="w-4 h-4" />
+                拒绝
+              </button>
+              <button
+                onClick={() => onApprove(request.id)}
+                disabled={isBlocked}
+                className={`flex items-center gap-1.5 px-4 py-2 font-medium rounded-xl transition-all ${
+                  isBlocked
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed border border-gray-200'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 hover:shadow-emerald-600/40'
+                }`}
+                title={isBlocked ? canApproveResult.reason : '通过申请'}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                通过
+              </button>
+            </div>
           </div>
         </td>
       </tr>
       {expanded && (
-        <tr className="bg-gradient-to-r from-blue-50/50 to-indigo-50/30">
+        <tr
+          className={`bg-gradient-to-r ${
+            isBlocked
+              ? 'from-rose-50/60 to-orange-50/40'
+              : 'from-blue-50/50 to-indigo-50/30'
+          }`}
+        >
           <td colSpan={6} className="py-5 px-8">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               <DetailItem

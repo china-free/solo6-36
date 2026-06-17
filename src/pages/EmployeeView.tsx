@@ -8,6 +8,8 @@ import {
   Sparkles,
   AlertCircle,
   CheckCircle2,
+  Clock,
+  Info,
 } from 'lucide-react';
 import { useLeaveStore } from '@/store/leaveStore';
 import { LeaveType, LEAVE_TYPE_LABELS } from '@/types';
@@ -29,14 +31,18 @@ export function EmployeeView() {
     getCurrentEmployee,
     getRequestsByEmployee,
     getUsedAnnualDays,
+    getPendingAnnualDays,
     getRemainingAnnualDays,
+    getAvailableAnnualDays,
     submitRequest,
   } = useLeaveStore();
 
   const employee = getCurrentEmployee();
   const myRequests = getRequestsByEmployee(currentEmployeeId);
   const usedAnnual = getUsedAnnualDays(currentEmployeeId);
+  const pendingAnnual = getPendingAnnualDays(currentEmployeeId);
   const remainingAnnual = getRemainingAnnualDays(currentEmployeeId);
+  const availableAnnual = getAvailableAnnualDays(currentEmployeeId);
 
   const today = new Date().toISOString().split('T')[0];
   const [startDate, setStartDate] = useState('');
@@ -83,9 +89,16 @@ export function EmployeeView() {
       return;
     }
 
-    if (leaveType === 'annual' && days > remainingAnnual) {
-      setError(`年假不足，剩余年假仅 ${remainingAnnual} 天`);
-      return;
+    if (leaveType === 'annual') {
+      if (days > availableAnnual) {
+        const pendingHint = pendingAnnual > 0
+          ? `（已休 ${usedAnnual} 天、待审批占用 ${pendingAnnual} 天）`
+          : `（已休 ${usedAnnual} 天）`;
+        setError(
+          `可提交年假不足${pendingHint}，当前可提交额度仅 ${availableAnnual} 天，本申请需要 ${days} 天。`
+        );
+        return;
+      }
     }
 
     submitRequest({
@@ -106,9 +119,16 @@ export function EmployeeView() {
     setTimeout(() => setShowSuccess(false), 3000);
   };
 
-  const annualUsagePercent =
+  const usedPercent =
     employee && employee.annualLeaveTotal > 0
       ? Math.min(100, (usedAnnual / employee.annualLeaveTotal) * 100)
+      : 0;
+  const pendingPercent =
+    employee && employee.annualLeaveTotal > 0
+      ? Math.min(
+          100 - usedPercent,
+          (pendingAnnual / employee.annualLeaveTotal) * 100
+        )
       : 0;
 
   return (
@@ -123,41 +143,79 @@ export function EmployeeView() {
                   年假概览
                 </h3>
               </div>
-              <div className="space-y-4">
-                <div className="flex items-end justify-between">
+              <div className="space-y-5">
+                <div className="grid grid-cols-3 gap-3">
                   <div>
-                    <p className="text-blue-200 text-sm mb-1">剩余年假</p>
-                    <p className="text-4xl font-bold tracking-tight">
+                    <p className="text-blue-200 text-xs mb-1 flex items-center gap-1">
+                      <Info className="w-3 h-3" />
+                      可提交
+                    </p>
+                    <p className="text-2xl font-bold tracking-tight text-emerald-200">
+                      {availableAnnual}
+                      <span className="text-xs font-normal ml-0.5">天</span>
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-blue-200 text-xs mb-1">账面剩余</p>
+                    <p className="text-2xl font-bold tracking-tight">
                       {remainingAnnual}
-                      <span className="text-lg font-normal text-blue-200 ml-1">
+                      <span className="text-xs font-normal text-blue-200 ml-0.5">
                         天
                       </span>
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-blue-200 text-sm mb-1">总额度</p>
-                    <p className="text-xl font-semibold">
+                    <p className="text-blue-200 text-xs mb-1">总额度</p>
+                    <p className="text-2xl font-semibold">
                       {employee.annualLeaveTotal}
-                      <span className="text-sm font-normal text-blue-200 ml-1">
+                      <span className="text-xs font-normal text-blue-200 ml-0.5">
                         天
                       </span>
                     </p>
                   </div>
                 </div>
 
+                <div className="h-px bg-white/15 my-1" />
+
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-emerald-300" />
+                    <span className="text-blue-100">已休</span>
+                    <span className="ml-auto font-bold">{usedAnnual}天</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-amber-300" />
+                    <span className="text-blue-100 flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      待审批
+                    </span>
+                    <span className="ml-auto font-bold">{pendingAnnual}天</span>
+                  </div>
+                </div>
+
                 <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-blue-200">已使用</span>
-                    <span className="font-medium">
-                      {usedAnnual} / {employee.annualLeaveTotal} 天
+                  <div className="flex justify-between text-xs text-blue-200">
+                    <span>额度使用进度</span>
+                    <span>
+                      已批 {usedAnnual} + 待批 {pendingAnnual} / {employee.annualLeaveTotal}
                     </span>
                   </div>
-                  <div className="h-3 bg-white/20 rounded-full overflow-hidden">
+                  <div className="h-3 bg-white/20 rounded-full overflow-hidden flex">
                     <div
-                      className="h-full bg-gradient-to-r from-emerald-300 to-teal-300 rounded-full transition-all duration-500"
-                      style={{ width: `${annualUsagePercent}%` }}
+                      className="h-full bg-gradient-to-r from-emerald-300 to-teal-400 transition-all duration-500"
+                      style={{ width: `${usedPercent}%` }}
+                    />
+                    <div
+                      className="h-full bg-gradient-to-r from-amber-300 to-orange-400 transition-all duration-500"
+                      style={{ width: `${pendingPercent}%` }}
                     />
                   </div>
+                  {pendingAnnual > 0 && (
+                    <p className="text-xs text-amber-200/90 flex items-start gap-1 pt-1">
+                      <Clock className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                      提示：待审批中的年假申请已预占额度，拒绝后将自动释放。
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
